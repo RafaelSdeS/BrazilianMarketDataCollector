@@ -143,6 +143,8 @@ def fetch_betas_from_yahoo(tickers):
 
 
 def dividend_class(value):
+    if pd.isna(value):
+        return value  # Preserve NaN/None as-is for proper filtering
     value = str(value)
     if value.startswith('UNT'):
         return 'UNT'
