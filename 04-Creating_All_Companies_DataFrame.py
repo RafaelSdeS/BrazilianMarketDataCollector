@@ -7,6 +7,8 @@
 import pandas as pd
 import datetime
 import numpy as np
+import glob
+import os
 from yahooquery import Ticker
 from dateutil.relativedelta import relativedelta
 
@@ -67,6 +69,81 @@ def label_year(row):
         return str(row['DT_INI_EXERC'].year)
     
     
+
+
+# In[ ]:
+
+
+def load_capital_social(info_companies):
+    capital_social_path = 'raw_data_B3/capital_social/capitalsocial.pkl'
+
+    def normalize_capital_social(df):
+        if df.index.name == 'Código' and 'Código' in df.columns:
+            df = df.drop(columns='Código')
+        return df
+
+    if os.path.exists(capital_social_path):
+        return normalize_capital_social(pd.read_pickle(capital_social_path))
+
+    backup_files = sorted(glob.glob('BACKUPS/capital_social/capitalsocial*.pkl'))
+    if backup_files:
+        return normalize_capital_social(pd.read_pickle(backup_files[-1]))
+
+    capital_social_files = [
+        path for path in glob.glob('raw_data_cvm/fre/FRE/fre_cia_aberta_capital_social_*.csv')
+        if os.path.basename(path).replace('fre_cia_aberta_capital_social_', '').replace('.csv', '').isdigit()
+    ]
+
+    if not capital_social_files:
+        raise FileNotFoundError(
+            f"{capital_social_path} não encontrado. Rode 03-Raw_data_B3.py para baixar esse arquivo."
+        )
+
+    capital_social = pd.concat(
+        [pd.read_csv(path, sep=';', encoding='latin1', dtype={'CNPJ_Companhia': str}) for path in capital_social_files],
+        ignore_index=True
+    )
+    capital_social = capital_social.loc[capital_social['Tipo_Capital'].eq('Capital Emitido')].copy()
+    capital_social['Data_Referencia'] = pd.to_datetime(capital_social['Data_Referencia'])
+    capital_social.sort_values(['CNPJ_Companhia', 'Data_Referencia', 'ID_Documento'], inplace=True)
+    capital_social.drop_duplicates('CNPJ_Companhia', keep='last', inplace=True)
+
+    tickers = info_companies[['CNPJ_Companhia', 'CDO_STRIP', 'NAME_PREG', 'DENOM_SOCIAL', 'SEGMENTO_B3']].drop_duplicates('CNPJ_Companhia')
+    capital_social = capital_social.merge(tickers, on='CNPJ_Companhia', how='left')
+    capital_social = capital_social.loc[capital_social['CDO_STRIP'].notna()].copy()
+
+    capital_social = capital_social.rename(columns={
+        'CDO_STRIP': 'Código',
+        'NAME_PREG': 'Nome do Pregão',
+        'DENOM_SOCIAL': 'Denominação Social',
+        'SEGMENTO_B3': 'Segmento de Mercado',
+        'Tipo_Capital': 'Tipo de Capital',
+        'Valor_Capital': 'Capital R$',
+        'Data_Autorizacao_Aprovacao': 'Aprovado em',
+        'Quantidade_Acoes_Ordinarias': 'Qtde Ações Ordinárias',
+        'Quantidade_Acoes_Preferenciais': 'Qtde Ações Preferenciais',
+        'Quantidade_Total_Acoes': 'Qtde Total de Ações',
+    })
+    capital_social = capital_social[[
+        'Código',
+        'Nome do Pregão',
+        'Denominação Social',
+        'Segmento de Mercado',
+        'Tipo de Capital',
+        'Capital R$',
+        'Aprovado em',
+        'Qtde Ações Ordinárias',
+        'Qtde Ações Preferenciais',
+        'Qtde Total de Ações',
+    ]]
+    capital_social.drop_duplicates('Código', inplace=True)
+    capital_social.set_index('Código', inplace=True)
+
+    os.makedirs(os.path.dirname(capital_social_path), exist_ok=True)
+    capital_social.to_pickle(capital_social_path)
+    print(f"{capital_social_path} não existia; reconstruído a partir dos arquivos FRE locais.")
+
+    return normalize_capital_social(capital_social)
 
 
 # In[ ]:
@@ -616,7 +693,7 @@ get_capex.loc[(get_capex.GRUPO_DFP == 'DF Individual - Demonstração do Fluxo d
 get_capex.drop_duplicates(['CD_CVM','GRUPO_DFP','CD_CONTA','DT_INI_EXERC','DT_FIM_EXERC'],inplace=True)
 get_capex['VL_CONTA'] = np.where(get_capex['ESCALA_MOEDA'] == 'MIL', get_capex['VL_CONTA']*1000, get_capex['VL_CONTA']*1)
 get_capex = get_capex.pivot_table(index=['CD_CVM','GRUPO_DFP','DT_INI_EXERC','DT_FIM_EXERC'],columns = ['CD_CONTA'],values='VL_CONTA')
-sum_neg = get_capex[get_capex<0].sum(1)
+sum_neg = get_capex[get_capex<0].sum(axis=1)
 capex = sum_neg.to_frame(name='Capex')
 dfcmipiv = dfcmipiv.join(capex)
 
@@ -1111,7 +1188,7 @@ hoje = datetime.datetime.today().strftime('%Y-%m-%d')
 ttm_ant = (datetime.datetime.today() - relativedelta(years=1)).strftime('%Y-%m-%d')
 
 pivot_setor_cvm_cd_conta['DT_FIM_EXERC'] = None
-for year in range(2009,int(this_year)+1):
+for year in range(2009,int(this_year)):
     conditions = [(pivot_setor_cvm_cd_conta['LABEL'].str.startswith('1T'+str(year))),
                  (pivot_setor_cvm_cd_conta['LABEL'].str.startswith('2T'+str(year))),
                  (pivot_setor_cvm_cd_conta['LABEL'].str.startswith('3T'+str(year))),
@@ -1141,7 +1218,7 @@ fre_dist['Data_Referencia'] = pd.to_datetime(fre_dist['Data_Referencia'])
 fre_dist['ano'] = fre_dist['Data_Referencia'].dt.year
 
 
-capital_social = pd.read_pickle('raw_data_B3/capital_social/capitalsocial.pkl')
+capital_social = load_capital_social(dfff)
 
 
 
@@ -1240,4 +1317,3 @@ pivot_setor_cvm_cd_conta.to_pickle("clean_data/pivoted_data/pivot_all_data.pkl")
 
 #backup 
 pivot_setor_cvm_cd_conta.to_pickle("BACKUPS/pivoted_data/pivot_all_data%s.pkl"%today)
-

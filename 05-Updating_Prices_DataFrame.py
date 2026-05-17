@@ -7,6 +7,7 @@
 import pandas as pd
 import datetime
 import numpy as np
+import os
 from yahooquery import Ticker
 from dateutil.relativedelta import relativedelta
 
@@ -29,10 +30,210 @@ warnings.filterwarnings('ignore')
 # In[ ]:
 
 
+def chunked(items, size):
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
+
+
+def normalize_ticker(symbol):
+    return str(symbol).upper().replace('.SA', '')
+
+
+def fetch_monthly_prices_from_yahoo(tickers):
+    frames = []
+
+    for batch in chunked(tickers, 50):
+        yahoo_symbols = [f'{str(ticker).lower()}.sa' for ticker in batch if pd.notna(ticker)]
+
+        if not yahoo_symbols:
+            continue
+
+        try:
+            history = Ticker(yahoo_symbols).history(period='max', interval='1mo')
+        except Exception:
+            continue
+
+        if isinstance(history, dict) or history.empty:
+            continue
+
+        history = history.reset_index()
+        if 'adjclose' not in history.columns:
+            continue
+
+        history = history.rename(columns={'adjclose': '5. adjusted close'})
+        history['symbol'] = history['symbol'].map(normalize_ticker)
+        frames.append(history[['date', '5. adjusted close', 'symbol']])
+
+    if not frames:
+        raise FileNotFoundError(
+            'PRICES/monthly/todos_precos_montlhy_AV.csv não encontrado e não foi possível baixar preços pelo Yahoo.'
+        )
+
+    hist_price = pd.concat(frames, ignore_index=True)
+    hist_price['date'] = pd.to_datetime(hist_price['date'], utc=True).dt.tz_localize(None)
+    hist_price.dropna(subset=['date', '5. adjusted close', 'symbol'], inplace=True)
+    hist_price.sort_values(['symbol', 'date'], inplace=True)
+    hist_price.drop_duplicates(['symbol', 'date'], keep='last', inplace=True)
+
+    os.makedirs('PRICES/monthly', exist_ok=True)
+    hist_price.to_csv('PRICES/monthly/todos_precos_montlhy_AV.csv', index=False)
+    print('Arquivo mensal de preços reconstruído com dados do Yahoo Finance.')
+
+    return hist_price
+
+
+def fetch_current_prices_from_yahoo(tickers):
+    current_prices = {}
+
+    for batch in chunked(tickers, 50):
+        yahoo_symbols = [f'{str(ticker).lower()}.sa' for ticker in batch if pd.notna(ticker)]
+
+        if not yahoo_symbols:
+            continue
+
+        try:
+            prices = Ticker(yahoo_symbols).price
+        except Exception:
+            continue
+
+        if not isinstance(prices, dict):
+            continue
+
+        for yahoo_symbol, price_data in prices.items():
+            if not isinstance(price_data, dict):
+                continue
+
+            price = price_data.get('regularMarketPrice')
+            if price in ({}, None):
+                continue
+
+            current_prices[normalize_ticker(yahoo_symbol)] = price
+
+    return current_prices
+
+
+def fetch_betas_from_yahoo(tickers):
+    betas = {}
+
+    for batch in chunked(tickers, 50):
+        yahoo_symbols = [f'{str(ticker).lower()}.sa' for ticker in batch if pd.notna(ticker)]
+
+        if not yahoo_symbols:
+            continue
+
+        try:
+            key_stats = Ticker(yahoo_symbols).key_stats
+        except Exception:
+            continue
+
+        if not isinstance(key_stats, dict):
+            continue
+
+        for yahoo_symbol, stats in key_stats.items():
+            if not isinstance(stats, dict):
+                continue
+
+            beta = stats.get('beta')
+            if beta in ({}, None):
+                continue
+
+            betas[normalize_ticker(yahoo_symbol)] = beta
+
+    return betas
+
+
+def dividend_class(value):
+    value = str(value)
+    if value.startswith('UNT'):
+        return 'UNT'
+    return value
+
+
+def fetch_dividends_from_yahoo(companies_data):
+    tickers = companies_data['CODIGO'].dropna().unique().tolist()
+    frames = []
+
+    for batch in chunked(tickers, 25):
+        yahoo_symbols = [f'{str(ticker).lower()}.sa' for ticker in batch if pd.notna(ticker)]
+
+        if not yahoo_symbols:
+            continue
+
+        try:
+            history = Ticker(yahoo_symbols).history(period='max', interval='1d')
+        except Exception:
+            continue
+
+        if isinstance(history, dict) or history.empty or 'dividends' not in history.columns:
+            continue
+
+        history = history.reset_index()
+        history = history.loc[history['dividends'].fillna(0).gt(0)].copy()
+
+        if history.empty:
+            continue
+
+        history['CODIGO'] = history['symbol'].map(normalize_ticker)
+        frames.append(history[['CODIGO', 'date', 'dividends']])
+
+    columns = ['Proventos', 'Data COM', 'CLASSE', 'Valor', 'Valor ajustado', 'Codigo_CVM', 'CODIGO', 'ano']
+    if not frames:
+        return pd.DataFrame(columns=columns)
+
+    dividends = pd.concat(frames, ignore_index=True)
+    dividends['Data COM'] = pd.to_datetime(dividends['date'], utc=True).dt.tz_localize(None)
+    dividends['Valor ajustado'] = dividends['dividends'].astype(float)
+    dividends['Valor'] = dividends['Valor ajustado']
+    dividends['Proventos'] = 'DIVIDENDO'
+
+    cvm_column = 'Codigo_CVM' if 'Codigo_CVM' in companies_data.columns else 'CD_CVM'
+    company_map = companies_data[['CODIGO', cvm_column, 'CLASSE']].drop_duplicates('CODIGO').copy()
+    company_map.rename(columns={cvm_column: 'Codigo_CVM'}, inplace=True)
+    company_map['CLASSE'] = company_map['CLASSE'].map(dividend_class)
+
+    dividends = dividends.merge(company_map, on='CODIGO', how='left')
+    dividends['ano'] = dividends['Data COM'].dt.year
+    dividends = dividends[columns]
+    dividends.dropna(subset=['Codigo_CVM', 'CLASSE', 'Valor ajustado'], inplace=True)
+    dividends.sort_values(['CODIGO', 'Data COM'], inplace=True)
+
+    return dividends
+
+
+def load_or_fetch_dividends(companies_data):
+    dividends_path = 'clean_data/dividends/proventos_b3.pkl'
+
+    if os.path.exists(dividends_path) and os.environ.get('REFRESH_DIVIDENDS') != '1':
+        return pd.read_pickle(dividends_path)
+
+    dividends = fetch_dividends_from_yahoo(companies_data)
+
+    if dividends.empty:
+        print('Nenhum dividendo encontrado no Yahoo Finance.')
+        return dividends
+
+    os.makedirs('clean_data/dividends', exist_ok=True)
+    os.makedirs('clean_data/final_data', exist_ok=True)
+    os.makedirs('BACKUPS/proventos', exist_ok=True)
+
+    dividends.to_pickle(dividends_path)
+    dividends.to_pickle('clean_data/final_data/proventos_b3.pkl')
+    dividends.to_pickle('BACKUPS/proventos/proventos_b3%s.pkl' % today)
+    print(f'Dividendos salvos em {dividends_path}.')
+
+    return dividends
+
+
 ## adding price history by month and year
 
 
-hist_price = pd.read_csv('PRICES/monthly/todos_precos_montlhy_AV.csv', index_col=False,low_memory=False)
+monthly_prices_path = 'PRICES/monthly/todos_precos_montlhy_AV.csv'
+if os.path.exists(monthly_prices_path):
+    hist_price = pd.read_csv(monthly_prices_path, index_col=False, low_memory=False)
+else:
+    companies_data = pd.read_excel('info_brazilian_companies.xlsx')
+    item_list = companies_data['CODIGO'].dropna().unique().tolist()
+    hist_price = fetch_monthly_prices_from_yahoo(item_list)
 
 hist_price['date'] = pd.to_datetime(hist_price['date'])
 
@@ -73,18 +274,22 @@ item_list = companies_data['CODIGO'].to_list()
 
 ## getting currente prices
 
-current_prices = {}
-for item in item_list:
-    try:
-        item_1 = item.lower()
-        current_prices.update({item: Ticker('%s.sa'%item_1).price[item_1+'.sa']['regularMarketPrice']})
-    except:
-        continue
+current_prices_path = 'PRICES/current_prices.pkl'
+if os.path.exists(current_prices_path):
+    companies_curr_price = pd.read_pickle(current_prices_path)
+else:
+    current_prices = fetch_current_prices_from_yahoo(item_list)
 
-companies_curr_price = pd.DataFrame.from_dict(current_prices, orient='index', columns=['current_price'])
-companies_curr_price['current_price'] = np.select([companies_curr_price['current_price']== {}],[0],companies_curr_price['current_price'])
-companies_curr_price['current_price'] = companies_curr_price['current_price'].astype('float64')
-companies_curr_price.to_pickle('PRICES/current_prices.pkl')
+    if current_prices:
+        companies_curr_price = pd.DataFrame.from_dict(current_prices, orient='index', columns=['current_price'])
+    else:
+        latest_prices = hist_price.sort_values('date').groupby('symbol').tail(1)
+        companies_curr_price = latest_prices.set_index('symbol')[['5. adjusted close']]
+        companies_curr_price.rename(columns={'5. adjusted close': 'current_price'}, inplace=True)
+
+    companies_curr_price['current_price'] = np.select([companies_curr_price['current_price']== {}],[0],companies_curr_price['current_price'])
+    companies_curr_price['current_price'] = companies_curr_price['current_price'].astype('float64')
+    companies_curr_price.to_pickle(current_prices_path)
 
 ##backup
 
@@ -309,9 +514,9 @@ conditions = [(pivot_alldata['Valor de Mercado'] == 0),(pivot_alldata['Valor de 
              ((pivot_alldata['Valor de Mercado'] >= 300000000) & (pivot_alldata['Valor de Mercado'] < 2000000000)), ((pivot_alldata['Valor de Mercado'] >= 2000000000) & (pivot_alldata['Valor de Mercado'] < 10000000000)),
              ((pivot_alldata['Valor de Mercado'] >= 10000000000) & (pivot_alldata['Valor de Mercado'] < 200000000000)), (pivot_alldata['Valor de Mercado'] >= 200000000000)]
 
-choices = [np.nan,'Nano Cap','Micro Cap','Small Cap','Mid Cap','Large Cap','Mega Cap']
+choices = [None,'Nano Cap','Micro Cap','Small Cap','Mid Cap','Large Cap','Mega Cap']
 
-pivot_alldata['Classificação Capitalização'] = np.select(conditions, choices, default=np.nan)
+pivot_alldata['Classificação Capitalização'] = np.select(conditions, choices, default=None)
 
 
 
@@ -342,45 +547,52 @@ pivot_alldata.to_pickle('BACKUPS/pivoted_data/pivot_com_indicadores%s.csv'%today
 
 ## adding dividends and calculating dividend yield
 
-alldiv = pd.read_pickle('clean_data/dividends/proventos_b3.pkl')
-alldiv['Data COM'] = pd.to_datetime(alldiv['Data COM'])
-
-dv_year = alldiv.drop(alldiv.columns.difference(['Codigo_CVM','CLASSE','ano','Valor ajustado']),axis=1)
-
-dv_year = dv_year.groupby(['Codigo_CVM','CLASSE','ano'],as_index=False).sum()
-
-dv_year.rename({"Valor ajustado":"Proventos no Período","ano":"label"},axis=1,inplace=True)
-
-dv_ttm = alldiv.drop(alldiv.columns.difference(['Codigo_CVM','CLASSE','Data COM','Valor ajustado']),axis=1)
-
-dv_ttm = dv_ttm.set_index('Data COM')
-
-dv_ttm = dv_ttm.loc[one_year_ago:today]
-
-dv_ttm = dv_ttm.groupby(['Codigo_CVM','CLASSE'],as_index=False).sum()
-
-dv_ttm.rename({'Valor ajustado':"Proventos no Período"},axis=1,inplace=True)
-
-dv_ttm['label'] = 'TTM'
-
-dv_all = pd.concat([dv_year,dv_ttm])
-
 df = pd.read_pickle('clean_data/pivoted_data/pivot_com_indicadores.pkl')
+companies_data = pd.read_excel('info_brazilian_companies.xlsx')
+alldiv = load_or_fetch_dividends(companies_data)
 
-df['Class div'] = np.select([((df['CLASSE']=='UNT') | (df['CLASSE']=='UNT N2'))],
-                           ['UNT'],df['CLASSE'])
+if not alldiv.empty:
+    alldiv['Data COM'] = pd.to_datetime(alldiv['Data COM'])
 
-dv_all['label'] = dv_all['label'].astype(str)
+    dv_year = alldiv.drop(alldiv.columns.difference(['Codigo_CVM','CLASSE','ano','Valor ajustado']),axis=1)
 
-df['LABEL'] = df['LABEL'].astype(str)
+    dv_year = dv_year.groupby(['Codigo_CVM','CLASSE','ano'],as_index=False).sum()
 
-df_all = df.merge(dv_all,left_on=['Codigo_CVM','Class div','LABEL'],right_on=['Codigo_CVM','CLASSE','label'],
-                 how='left')
+    dv_year.rename({"Valor ajustado":"Proventos no Período","ano":"label"},axis=1,inplace=True)
+
+    dv_ttm = alldiv.drop(alldiv.columns.difference(['Codigo_CVM','CLASSE','Data COM','Valor ajustado']),axis=1)
+
+    dv_ttm = dv_ttm.set_index('Data COM').sort_index()
+
+    dv_ttm = dv_ttm.loc[one_year_ago:today]
+
+    dv_ttm = dv_ttm.groupby(['Codigo_CVM','CLASSE'],as_index=False).sum()
+
+    dv_ttm.rename({'Valor ajustado':"Proventos no Período"},axis=1,inplace=True)
+
+    dv_ttm['label'] = 'TTM'
+
+    dv_all = pd.concat([dv_year,dv_ttm])
+
+    df['Class div'] = np.select([((df['CLASSE']=='UNT') | (df['CLASSE']=='UNT N2'))],
+                               ['UNT'],df['CLASSE'])
+
+    dv_all['label'] = dv_all['label'].astype(str)
+
+    df['LABEL'] = df['LABEL'].astype(str)
+
+    df_all = df.merge(dv_all,left_on=['Codigo_CVM','Class div','LABEL'],right_on=['Codigo_CVM','CLASSE','label'],
+                     how='left')
 
 
-df_all['Dividend Yield'] = df_all['Proventos no Período']/df_all['Preço']
+    df_all['Dividend Yield'] = df_all['Proventos no Período']/df_all['Preço']
 
-df_all.drop(['CLASSE_y','Class div', 'label'], axis=1,inplace=True)
+    df_all.drop(['CLASSE_y','Class div', 'label'], axis=1,inplace=True)
+else:
+    df_all = df.rename(columns={'CLASSE': 'CLASSE_x'})
+    df_all['Proventos no Período'] = np.nan
+    df_all['Dividend Yield'] = np.nan
+    print('Dividend Yield será salvo como vazio porque nenhum dividendo foi encontrado.')
 
 df_all = df_all.dropna(subset=['Nome_Empresarial'])
 
@@ -522,13 +734,11 @@ brazil_erp = (damodaran_table.loc[damodaran_table['Country'] == 'Brazil']['Total
 companies = ttm['CODIGO'].unique()
 ttm['beta'] = np.nan
 
-for x in companies:
-    try:
-        y = x.lower()
-        beta = Ticker(y+'.sa').key_stats[y+'.sa']['beta']
-        ttm['beta'] = np.select([ttm['CODIGO'] == x],[beta],ttm['beta'])
-    except:
-        continue
+betas = {}
+if os.environ.get('FETCH_YAHOO_BETAS') == '1':
+    betas = fetch_betas_from_yahoo(companies)
+if betas:
+    ttm['beta'] = ttm['CODIGO'].map(betas)
 
 ### SE ERRO beta médio do setor
 
@@ -869,7 +1079,7 @@ for item in indicadores:
     test = remove_outlier(mean_indicators,item)
     arq = arq.merge(test,how='outer')
 
-medias_mercado_ttm = arq.mean()
+medias_mercado_ttm = arq.mean(numeric_only=True)
 medias_mercado_ttm.name = 'Média Mercado'
 
 medias_mercado_ttm.to_pickle('clean_data/final_data/medias_mercado_ttm.pkl')
@@ -912,7 +1122,7 @@ for setor in setores:
         
     concat_setor = pd.concat([concat_setor,arq])
 
-medias_setor = concat_setor.groupby('SETOR').mean()
+medias_setor = concat_setor.groupby('SETOR').mean(numeric_only=True)
 medias_setor.to_pickle('clean_data/final_data/medias_setor.pkl')
 medias_setor.to_pickle('BACKUPS/medias/medias_setor%s.pkl'%today)
 
@@ -944,7 +1154,7 @@ for setor in subsetores:
         
     concat_subsetor = pd.concat([concat_subsetor,arq])
 
-medias_subsetor = concat_subsetor.groupby('SUBSETOR').mean()
+medias_subsetor = concat_subsetor.groupby('SUBSETOR').mean(numeric_only=True)
 medias_subsetor.to_pickle('clean_data/final_data/medias_subsetor.pkl')
 medias_subsetor.to_pickle('BACKUPS/medias/medias_subsetor%s.pkl'%today)
 
@@ -976,7 +1186,7 @@ for setor in segmento:
         
     concat_segmento = pd.concat([concat_segmento,arq])
 
-medias_segmento = concat_segmento.groupby('SEGMENTO').mean()
+medias_segmento = concat_segmento.groupby('SEGMENTO').mean(numeric_only=True)
 medias_segmento.to_pickle('clean_data/final_data/medias_segmento.pkl')
 medias_segmento.to_pickle('BACKUPS/medias/medias_segmento%s.pkl'%today)
 
@@ -1008,8 +1218,6 @@ for setor in capitaliz:
         
     concat_capital = pd.concat([concat_capital,arq])
 
-medias_capital = concat_capital.groupby('Classificação Capitalização').mean()
+medias_capital = concat_capital.groupby('Classificação Capitalização').mean(numeric_only=True)
 medias_capital.to_pickle('clean_data/final_data/medias_capital.pkl')
 medias_capital.to_pickle('BACKUPS/medias/medias_capital%s.pkl'%today)
-
-

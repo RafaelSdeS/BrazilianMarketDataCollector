@@ -103,7 +103,7 @@ url_base = 'http://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/DFP/DADOS/'
 """* criando uma lista com o nome de todos os arquivos"""
 
 arquivos_zip = []
-for ano in range(2010,2023):
+for ano in range(2010,2026):
     arquivos_zip.append(f'dfp_cia_aberta_{ano}.zip')
 
 arquivos_zip
@@ -143,7 +143,7 @@ url_base = 'http://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/ITR/DADOS/'
 """* criando uma lista com o nome de todos os arquivos"""
 
 arquivos_zip = []
-for ano in range(2011,2023):
+for ano in range(2011,2026):
     arquivos_zip.append(f'itr_cia_aberta_{ano}.zip')
 
 arquivos_zip
@@ -183,7 +183,7 @@ url_base = 'http://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/FRE/DADOS/'
 """* criando uma lista com o nome de todos os arquivos"""
 
 arquivos_zip = []
-for ano in range(2010,2023):
+for ano in range(2010,2026):
     arquivos_zip.append(f'fre_cia_aberta_{ano}.zip')
 
 arquivos_zip
@@ -223,7 +223,7 @@ url_base = 'http://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/FCA/DADOS/'
 """* criando uma lista com o nome de todos os arquivos"""
 
 arquivos_zip = []
-for ano in range(2010,2023):
+for ano in range(2010,2026):
     arquivos_zip.append(f'fca_cia_aberta_{ano}.zip')
 
 arquivos_zip
@@ -328,7 +328,7 @@ for nome in nomes:
 nomes = ['posicao_acionaria','distribuicao_capital']
 for nome in nomes:
     arquivo = pd.DataFrame()
-    for ano in range(2010,int(this_year)+1):
+    for ano in range(2010,int(this_year)):
         arquivo = pd.concat([arquivo, pd.read_csv(f'raw_data_cvm/fre/FRE/fre_cia_aberta_{nome}_{ano}.csv', sep=';', decimal=',', encoding='ISO-8859-1')])
     arquivo.to_pickle(f'merged_data_cvm/new_data/FRE/fre_cia_aberta_{nome}_tudo.pkl')
 
@@ -340,13 +340,12 @@ for nome in nomes:
 nomes = ['geral']
 for nome in nomes:
     arquivo = pd.DataFrame()
-    for ano in range(2010,int(this_year)+1):
+    for ano in range(2010,int(this_year)):
         arquivo = pd.concat([arquivo, pd.read_csv(f'raw_data_cvm/fca/FCA/fca_cia_aberta_{nome}_{ano}.csv', sep=';', decimal=',', encoding='ISO-8859-1')])
     arquivo.to_pickle(f'merged_data_cvm/new_data/FCA/fca_cia_aberta_{nome}_tudo.pkl')
 
 
 # In[ ]:
-
 
 
 

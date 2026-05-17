@@ -28,7 +28,7 @@ url_base = 'http://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/DFP/DADOS/'
 """* criando uma lista com o nome de todos os arquivos"""
 
 arquivos_zip = []
-for ano in range(2017,int(this_year)+1):
+for ano in range(2017,int(this_year)):
     arquivos_zip.append(f'dfp_cia_aberta_{ano}.zip')
 
 arquivos_zip
@@ -66,7 +66,7 @@ url_base = 'http://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/ITR/DADOS/'
 """* criando uma lista com o nome de todos os arquivos"""
 
 arquivos_zip = [] 
-for ano in range(2017,int(this_year)+1): 
+for ano in range(2017,int(this_year)): 
     arquivos_zip.append(f'itr_cia_aberta_{ano}.zip')
 
 
@@ -103,7 +103,7 @@ url_base = 'http://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/FRE/DADOS/'
 """* criando uma lista com o nome de todos os arquivos"""
 
 arquivos_zip = []
-for ano in[2010,2011,2012,2013,2014,2015,2016,2017,2018,2019,2021,2023]:
+for ano in[2010,2011,2012,2013,2014,2015,2016,2017,2018,2019, 2020, 2021, 2022, 2023, 2024, 2025]:
   arquivos_zip.append(f'fre_cia_aberta_{ano}.zip')
 
 arquivos_zip
@@ -141,7 +141,7 @@ url_base = 'http://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/FCA/DADOS/'
 """* criando uma lista com o nome de todos os arquivos"""
 
 arquivos_zip = []
-for ano in range(2011,int(this_year)+1):
+for ano in range(2011,int(this_year)):
   arquivos_zip.append(f'fca_cia_aberta_{ano}.zip')
 
 arquivos_zip
